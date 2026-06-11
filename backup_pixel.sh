@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -o pipefail
+
 # ============================================================
 # backup_pixel.sh
 # 把 Pixel 7 Pro 照片備份到 Mac，只拉新檔案、跳過已備份的
@@ -34,9 +36,14 @@ fi
 
 # ── 2. 確認手機有連上 ─────────────────────────────────────────
 echo "🔍 偵測手機連線..."
-ADB_DEVICES=$(adb devices | grep -v "List of devices" | grep "device$")
+DEVICE_SERIALS=()
+while IFS=$'\t' read -r SERIAL STATE; do
+  if [ "$STATE" = "device" ]; then
+    DEVICE_SERIALS+=("$SERIAL")
+  fi
+done < <(adb devices | tail -n +2)
 
-if [ -z "$ADB_DEVICES" ]; then
+if [ ${#DEVICE_SERIALS[@]} -eq 0 ]; then
   echo -e "${RED}❌ 找不到手機，請確認：${NC}"
   echo "   1. USB 線有接好"
   echo "   2. 手機已開啟 USB 偵錯（開發人員選項）"
@@ -44,32 +51,59 @@ if [ -z "$ADB_DEVICES" ]; then
   exit 1
 fi
 
-echo -e "${GREEN}✅ 手機已連線${NC}"
+if [ ${#DEVICE_SERIALS[@]} -gt 1 ]; then
+  echo -e "${RED}❌ 偵測到多台 Android 裝置，請先只保留要備份的那一台：${NC}"
+  for SERIAL in "${DEVICE_SERIALS[@]}"; do
+    echo "   - $SERIAL"
+  done
+  exit 1
+fi
+
+ADB_SERIAL="${DEVICE_SERIALS[0]}"
+
+echo -e "${GREEN}✅ 手機已連線：$ADB_SERIAL${NC}"
 echo ""
 
 # ── 3. 建立備份目錄 ───────────────────────────────────────────
-mkdir -p "$DEST"
+if ! mkdir -p "$DEST"; then
+  echo -e "${RED}❌ 無法建立備份目錄：$DEST${NC}"
+  exit 1
+fi
 
 # ── 4. 開始備份每個資料夾 ─────────────────────────────────────
 TOTAL_NEW=0
 TOTAL_SKIP=0
 TOTAL_FAIL=0
+TOTAL_DIR_FAIL=0
 
 for PHONE_DIR in "${PHONE_DIRS[@]}"; do
   # 把手機路徑轉成 Mac 上的子目錄名稱
   # 例如 /sdcard/DCIM/Camera → DCIM/Camera
   REL_PATH="${PHONE_DIR#/sdcard/}"
   LOCAL_DIR="$DEST/$REL_PATH"
-  mkdir -p "$LOCAL_DIR"
+  if ! mkdir -p "$LOCAL_DIR"; then
+    echo -e "${RED}❌ 無法建立本機資料夾：$LOCAL_DIR${NC}"
+    TOTAL_DIR_FAIL=$((TOTAL_DIR_FAIL + 1))
+    continue
+  fi
 
   echo "📂 備份：$PHONE_DIR"
   echo "   → $LOCAL_DIR"
 
   # 取得手機上的檔案清單
-  FILE_LIST=$(adb shell find "$PHONE_DIR" -type f 2>/dev/null)
+  FILE_LIST=$(adb -s "$ADB_SERIAL" shell find "$PHONE_DIR" -type f 2>/dev/null)
+  FIND_STATUS=$?
+  FILE_LIST=${FILE_LIST//$'\r'/}
+
+  if [ $FIND_STATUS -ne 0 ] && [ -z "$FILE_LIST" ]; then
+    echo -e "   ${RED}❌ 無法讀取資料夾，請確認路徑存在且手機仍保持連線${NC}"
+    echo ""
+    TOTAL_DIR_FAIL=$((TOTAL_DIR_FAIL + 1))
+    continue
+  fi
 
   if [ -z "$FILE_LIST" ]; then
-    echo -e "   ${YELLOW}⚠️  資料夾是空的或不存在，跳過${NC}"
+    echo -e "   ${YELLOW}⚠️  資料夾是空的，跳過${NC}"
     echo ""
     continue
   fi
@@ -84,12 +118,16 @@ for PHONE_DIR in "${PHONE_DIRS[@]}"; do
     LOCAL_FILE="$DEST/$REL_FILE"
 
     # 建立子目錄（如果需要）
-    mkdir -p "$(dirname "$LOCAL_FILE")"
+    if ! mkdir -p "$(dirname "$LOCAL_FILE")"; then
+      echo -e "   ${RED}❌ 無法建立本機資料夾：$(dirname "$LOCAL_FILE")${NC}"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
 
     # ── 核心邏輯：只拉 Mac 上不存在的檔案 ──
     if [ -f "$LOCAL_FILE" ]; then
       # 已存在：比對檔案大小，大小一樣就跳過
-      PHONE_SIZE=$(adb shell stat -c%s "$PHONE_FILE" 2>/dev/null | tr -d '\r')
+      PHONE_SIZE=$(adb -s "$ADB_SERIAL" shell stat -c%s "$PHONE_FILE" 2>/dev/null | tr -d '\r')
       LOCAL_SIZE=$(stat -f%z "$LOCAL_FILE" 2>/dev/null)
 
       if [ "$PHONE_SIZE" = "$LOCAL_SIZE" ]; then
@@ -102,7 +140,7 @@ for PHONE_DIR in "${PHONE_DIRS[@]}"; do
     fi
 
     # 拉取檔案
-    adb pull "$PHONE_FILE" "$LOCAL_FILE" &>/dev/null
+    adb -s "$ADB_SERIAL" pull "$PHONE_FILE" "$LOCAL_FILE" &>/dev/null
     if [ $? -eq 0 ]; then
       NEW=$((NEW + 1))
     else
@@ -131,13 +169,17 @@ echo    "   跳過（已備份）：$TOTAL_SKIP 個檔案"
 if [ $TOTAL_FAIL -gt 0 ]; then
   echo -e "   ${RED}失敗：$TOTAL_FAIL 個檔案${NC}"
 fi
+if [ $TOTAL_DIR_FAIL -gt 0 ]; then
+  echo -e "   ${RED}失敗：$TOTAL_DIR_FAIL 個資料夾${NC}"
+fi
 echo ""
 echo "📁 備份位置：$DEST"
 echo ""
 
-if [ $TOTAL_FAIL -eq 0 ]; then
+if [ $TOTAL_FAIL -eq 0 ] && [ $TOTAL_DIR_FAIL -eq 0 ]; then
   echo -e "${GREEN}🎉 備份完成！${NC}"
+  exit 0
 else
-  echo -e "${YELLOW}⚠️  備份完成，但有 $TOTAL_FAIL 個檔案失敗，建議再跑一次${NC}"
+  echo -e "${YELLOW}⚠️  備份完成，但有失敗項目，建議再跑一次${NC}"
+  exit 1
 fi
-echo ""
