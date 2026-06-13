@@ -64,17 +64,67 @@ brew install exiftool
 /sdcard/Pictures
 ```
 
-如果要改備份位置或來源資料夾，可以編輯 `backup_pixel.sh` 裡的 `DEST` 和 `PHONE_DIRS`。如果改了備份位置，也要同步修改 `fix_dates_pixel.sh` 裡的 `TARGET`。
+如果要改備份位置或來源資料夾，可以編輯 `skills/pixel-photo-backup/scripts/backup_pixel.sh` 裡的 `DEST` 和 `PHONE_DIRS`。如果改了備份位置，也要同步修改 `skills/pixel-photo-backup/scripts/fix_dates_pixel.sh` 裡的 `TARGET`。
 
 ## 腳本說明
 
 `backup_pixel.sh`
 
+相容用的 wrapper，會執行 `skills/pixel-photo-backup/scripts/backup_pixel.sh`。
+
+`skills/pixel-photo-backup/scripts/backup_pixel.sh`
+
 備份手機照片與影片到 Mac。檔案已存在時會比較手機與本機檔案大小，大小相同就跳過，大小不同會重新拉取。
 
 `fix_dates_pixel.sh`
 
+相容用的 wrapper，會執行 `skills/pixel-photo-backup/scripts/fix_dates_pixel.sh`。
+
+`skills/pixel-photo-backup/scripts/fix_dates_pixel.sh`
+
 遞迴處理備份目錄中的照片與影片，將檔案日期改回拍攝時間。照片優先使用 `DateTimeOriginal`；影片使用 `CreationDate`，並在需要時 fallback 到 `CreateDate`。
+
+## Codex Skill
+
+這個 repo 也提供可安裝的 Codex skill:
+
+```text
+skills/pixel-photo-backup
+```
+
+以下指令使用 Vercel Labs 的 `skills` CLI，可參考 [`vercel-labs/skills`](https://github.com/vercel-labs/skills)。
+
+從本機 clone 安裝到 Codex:
+
+```sh
+npx skills add . --skill pixel-photo-backup --agent codex
+```
+
+安裝成全域 skill:
+
+```sh
+npx skills add . --skill pixel-photo-backup --agent codex --global
+```
+
+不安裝、直接產生可貼給 agent 的 prompt:
+
+```sh
+npx skills use . --skill pixel-photo-backup
+```
+
+從 GitHub 安裝:
+
+```sh
+npx skills add https://github.com/ddsakura/android-photo-backup --skill pixel-photo-backup --agent codex
+```
+
+安裝後可以用 `$pixel-photo-backup` 觸發，例如:
+
+```text
+Use $pixel-photo-backup to back up my Pixel photos to my Mac and fix captured dates.
+```
+
+skill 內的 `scripts/backup_pixel.sh` 和 `scripts/fix_dates_pixel.sh` 是這個 repo 的 source of truth；root 的 `backup_pixel.sh` 和 `fix_dates_pixel.sh` 只是方便舊用法的 wrapper。
 
 ## 常見問題
 
